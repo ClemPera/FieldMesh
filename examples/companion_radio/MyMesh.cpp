@@ -683,6 +683,7 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
     _listener->onChannelMessageRecv(pkt, channel_details, text);
     _listener->onQueueSizeChanged(offline_queue_len);
   }
+#ifdef DISPLAY_CLASS
   // V3: SOS-Erkennung — "!SOS" irgendwo im Text (MeshCore stellt Node-Name voran)
   if (strstr(text, "!SOS") != NULL) {
     if (_listener) _listener->triggerSOS(channel_details.name, text);
@@ -1205,7 +1206,7 @@ void MyMesh::toggleOffGrid() {
     }
     _prefs._client_repeat = 0;
   }
-  radio_set_params(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+  radio_driver.setParams(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
   savePrefs();
   advert();  // V4.07: RX restart via normal TX->RX cycle of the wrapper
 }
