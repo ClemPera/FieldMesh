@@ -73,6 +73,12 @@
 // To change, adjust the 5 and recompile
 #define AUTO_ADVERT_INTERVAL_MS  (5UL * 60UL * 1000UL)
 
+// Off-grid settings: 869.4625 MHz, BW 125, SF 11, CR 5 (EU sub-band g1, no LBT)
+#define OFFGRID_FREQ  869.4625f
+#define OFFGRID_BW    125.0f
+#define OFFGRID_SF    11
+#define OFFGRID_CR    5
+
 /* -------------------------------------------------------------------------------------- */
 
 #define REQ_TYPE_GET_STATUS             0x01 // same as _GET_STATS
@@ -322,8 +328,12 @@ public:
     return _prefs.advert_loc_policy == ADVERT_LOC_SHARE;
   }
 
-  // Off-Grid Mode: Radio-Parameter sichern/wiederherstellen + client_repeat setzen
-  bool isOffGridActive() const { return _prefs._client_repeat != 0; }
+  // Off-Grid Mode: derived truth — repeat enabled AND tuned to off-grid freq.
+  // (Canonical state is repeat.disable_fwd, persisted in prefs.json; the legacy
+  // _client_repeat mirror is not persisted, so never gate on it alone.)
+  bool isOffGridActive() const {
+    return _prefs.isRepeatEn() && _prefs.freq > OFFGRID_FREQ - 0.001f && _prefs.freq < OFFGRID_FREQ + 0.001f;
+  }
   void toggleOffGrid();
 
   // V3: SOS-Nachricht in den SOS-Channel senden

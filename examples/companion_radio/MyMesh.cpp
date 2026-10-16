@@ -309,6 +309,8 @@ bool MyMesh::isAutoAddEnabled() const {
 }
 
 bool MyMesh::shouldAutoAddContactType(uint8_t contact_type) const {
+  // NOTE: input is the raw advert role — the 0x10 GPS bit lives only in stored
+  // ContactInfo.type, never in this parameter, so no masking needed here.
   if ((_prefs.manual_add_contacts & 1) == 0) {
     return true;
   }
@@ -620,7 +622,8 @@ bool MyMesh::isSenderFavorite(const char* text) {
     return false;
   }
   static ContactInfo contact;  // static: BSS segment, not on the stack
-  for (uint32_t i = 0; i < MAX_CONTACTS; i++) {
+  // contacts[0..MAX_ANON_CONTACTS) are transient anon slots — real contacts start at the offset
+  for (uint32_t i = MAX_ANON_CONTACTS; i < (uint32_t)getTotalContactSlots(); i++) {
     if (!getContactByIdx(i, contact)) break;
     if (contact.name[0] == 0) continue;
     if (strcmp(contact.name, sender_name) == 0) {
@@ -1176,14 +1179,9 @@ bool MyMesh::isValidClientRepeatFreq(uint32_t f) const {
 }
 
 // Off-grid mode: save normal parameters and switch to off-grid settings (or back)
-// Off-grid settings: 869.4625 MHz, BW 125, SF 11, CR 5 (EU sub-band g1, no LBT)
-#define OFFGRID_FREQ  869.4625f
-#define OFFGRID_BW    125.0f
-#define OFFGRID_SF    11
-#define OFFGRID_CR    5
-
+// (OFFGRID_* defined in MyMesh.h — shared with isOffGridActive())
 void MyMesh::toggleOffGrid() {
-  if (_prefs._client_repeat == 0) {
+  if (!isOffGridActive()) {
     // Off-Grid aktivieren: Normal-Parameter sichern
     _prefs.normal_freq = _prefs.freq;
     _prefs.normal_bw   = _prefs.bw;
@@ -1195,6 +1193,7 @@ void MyMesh::toggleOffGrid() {
     _prefs.sf   = OFFGRID_SF;
     _prefs.cr   = OFFGRID_CR;
     _prefs._client_repeat = 1;
+    _prefs.setRepeatEn(true);   // canonical repeat flag — allowPacketForward() gates on this
   } else {
     // Off-Grid deaktivieren: Normal-Parameter wiederherstellen
     // Fallback if normal_freq was never set (first use)
@@ -1205,6 +1204,7 @@ void MyMesh::toggleOffGrid() {
       _prefs.cr   = _prefs.normal_cr;
     }
     _prefs._client_repeat = 0;
+    _prefs.setRepeatEn(false);  // keep canonical flag in sync (see above)
   }
   radio_driver.setParams(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
   savePrefs();
@@ -1640,6 +1640,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       _prefs.freq = (float)freq / 1000.0;
       _prefs.bw = (float)bw / 1000.0;
       _prefs.setRepeatEn(repeat != 0);
+      _prefs._client_repeat = repeat ? 1 : 0;  // legacy mirror (not persisted); canonical state is repeat.disable_fwd
       savePrefs();
 
       radio_driver.setParams(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
@@ -2269,7 +2270,9 @@ void MyMesh::handleCmdFrame(size_t len) {
 }
 
 static bool save_filter(const ContactInfo& c) {
-  return c.type != ADV_TYPE_NONE;   // don't save the transient/anon entries
+  // Bit 4 (0x10) is the FieldMesh GPS bit, not a role — mask before NONE check.
+  // (Anon slots never carry GPS; a bare 0x10 must not be persisted.)
+  return (c.type & 0x0F) != ADV_TYPE_NONE;   // don't save the transient/anon entries
 }
 
 void MyMesh::saveContacts() {
@@ -2669,8 +2672,8 @@ bool MyMesh::advert() {
     pkt = createSelfAdvert(_prefs.node_name);
   }
   if (pkt) {
-    if (_prefs._client_repeat) {
-      // Off-grid mode: flood advert so other M1s can relay it
+    if (_prefs.isRepeatEn()) {
+      // Repeat enabled: flood advert so other M1s can relay it (agrees with allowPacketForward())
       sendFlood(pkt, (uint32_t)0, _prefs.path_hash_mode + 1);
     } else {
       sendZeroHop(pkt);

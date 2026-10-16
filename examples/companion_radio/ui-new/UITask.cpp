@@ -2215,7 +2215,11 @@ void UITask::onQueueSizeChanged(int msgcount) {
 
 void UITask::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path_len, const uint8_t* path) {
   (void) contact; (void) is_new; (void) path_len; (void) path;
-  // FieldMesh: no discovery popup (upstream notify dropped to preserve UX).
+  // FieldMesh: single discovery-notify path lives here (MyMesh stays silent).
+  // Notify only when the phone app is not connected — mirrors ui-orig.
+  if (!hasConnection()) {
+    notify(UIEventType::newContactMessage);
+  }
 }
 
 void UITask::onControlDataRecv(const mesh::Packet* packet) {

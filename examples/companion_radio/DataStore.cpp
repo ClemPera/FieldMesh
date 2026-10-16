@@ -239,10 +239,15 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs) {
     file.read((uint8_t *)_prefs.default_scope_name, sizeof(_prefs.default_scope_name));    // 90
     file.read((uint8_t *)_prefs.default_scope_key, sizeof(_prefs.default_scope_key));     // 121
     // Off-Grid Normal-Parameter (neu — fehlen in alten Saves → bleiben 0, kein Problem)
-    file.read((uint8_t *)&_prefs.normal_freq, sizeof(_prefs.normal_freq));         // 90
-    file.read((uint8_t *)&_prefs.normal_bw,   sizeof(_prefs.normal_bw));           // 94
-    file.read((uint8_t *)&_prefs.normal_sf,   sizeof(_prefs.normal_sf));           // 98
-    file.read((uint8_t *)&_prefs.normal_cr,   sizeof(_prefs.normal_cr));           // 99
+    // Guard: kurze alte /new_prefs-Files koennen vor diesem Tail enden; dann Defaults
+    // behalten (sonst Radio evtl. auf Off-Grid-Freq mit geloeschtem Flag).
+    if (file.available() >= (int)(sizeof(_prefs.normal_freq) + sizeof(_prefs.normal_bw) +
+                                  sizeof(_prefs.normal_sf) + sizeof(_prefs.normal_cr))) {
+      file.read((uint8_t *)&_prefs.normal_freq, sizeof(_prefs.normal_freq));         // 90
+      file.read((uint8_t *)&_prefs.normal_bw,   sizeof(_prefs.normal_bw));           // 94
+      file.read((uint8_t *)&_prefs.normal_sf,   sizeof(_prefs.normal_sf));           // 98
+      file.read((uint8_t *)&_prefs.normal_cr,   sizeof(_prefs.normal_cr));           // 99
+    }
 
     // migrate old fields
     _prefs.setRepeatEn(_prefs._client_repeat != 0);
