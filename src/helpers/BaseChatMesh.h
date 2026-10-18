@@ -9,7 +9,7 @@
 
 #include "ContactInfo.h"
 
-#define MAX_SEARCH_RESULTS   8
+#define MAX_SEARCH_RESULTS   24
 
 #define MSG_SEND_FAILED       0
 #define MSG_SEND_SENT_FLOOD   1
@@ -28,14 +28,17 @@ public:
 class BaseChatMesh;
 
 class ContactsIterator {
-  int next_idx = 0;
+  int next_idx;
 public:
+  ContactsIterator(int start) { next_idx = start; }
   bool hasNext(const BaseChatMesh* mesh, ContactInfo& dest);
 };
 
 #ifndef MAX_CONTACTS
   #define MAX_CONTACTS  32
 #endif
+
+#define MAX_ANON_CONTACTS  8
 
 #ifndef MAX_CONNECTIONS
   #define MAX_CONNECTIONS  16
@@ -58,9 +61,10 @@ class BaseChatMesh : public mesh::Mesh {
 
   friend class ContactsIterator;
 
-  ContactInfo contacts[MAX_CONTACTS];
+  ContactInfo contacts[MAX_CONTACTS+MAX_ANON_CONTACTS];
   int num_contacts;
-  int sort_array[MAX_CONTACTS];
+  bool _last_advert_has_latlon = false;   // FieldMesh: GPS flag of the advert being processed
+  int sort_array[MAX_CONTACTS+MAX_ANON_CONTACTS];
   int matching_peer_indexes[MAX_SEARCH_RESULTS];
   unsigned long txt_send_timeout;
 #ifdef MAX_GROUP_CHANNELS
@@ -72,13 +76,14 @@ class BaseChatMesh : public mesh::Mesh {
   ConnectionInfo connections[MAX_CONNECTIONS];
 
   mesh::Packet* composeMsgPacket(const ContactInfo& recipient, uint32_t timestamp, uint8_t attempt, const char *text, uint32_t& expected_ack);
-  void sendAckTo(const ContactInfo& dest, uint32_t ack_hash);
+  void sendAckTo(const ContactInfo& dest, const uint8_t* ack_hash, uint8_t ack_len=4);
 
 protected:
   BaseChatMesh(mesh::Radio& radio, mesh::MillisecondClock& ms, mesh::RNG& rng, mesh::RTCClock& rtc, mesh::PacketManager& mgr, mesh::MeshTables& tables)
       : mesh::Mesh(radio, ms, rng, rtc, mgr, tables)
-  { 
-    num_contacts = 0;
+  {
+    resetContacts();
+
   #ifdef MAX_GROUP_CHANNELS
     memset(channels, 0, sizeof(channels));
     num_channels = 0;
@@ -89,9 +94,13 @@ protected:
   }
 
   void bootstrapRTCfromContacts();
-  void resetContacts() { num_contacts = 0; }
+
+  void resetContacts() {
+    memset(contacts, 0, sizeof(contacts[0])*MAX_ANON_CONTACTS);   // set all to have type = ADV_TYPE_NONE(0)
+    num_contacts = MAX_ANON_CONTACTS;  // seed the first contacts for anon requests
+  }
   void populateContactFromAdvert(ContactInfo& ci, const mesh::Identity& id, const AdvertDataParser& parser, uint32_t timestamp);
-  ContactInfo* allocateContactSlot(); // helper to find slot for new contact
+  ContactInfo* allocateContactSlot(bool transient_only=false); // helper to find slot for new contact
 
   // 'UI' concepts, for sub-classes to implement
   virtual bool isAutoAddEnabled() const { return true; }
@@ -101,11 +110,14 @@ protected:
   virtual uint8_t getAutoAddMaxHops() const { return 0; }  // 0 = no limit, 1 = direct (0 hops), N = up to N-1 hops
   virtual void onContactOverwrite(const uint8_t* pub_key) {};
   virtual void onDiscoveredContact(ContactInfo& contact, bool is_new, uint8_t path_len, const uint8_t* path) = 0;
+  // FieldMesh: true if the advert currently being processed (inside onDiscoveredContact) contained lat/lon
+  bool lastAdvertHasLatLon() const { return _last_advert_has_latlon; }
   virtual ContactInfo* processAck(const uint8_t *data) = 0;
   virtual void onContactPathUpdated(const ContactInfo& contact) = 0;
   virtual bool onContactPathRecv(ContactInfo& from, uint8_t* in_path, uint8_t in_path_len, uint8_t* out_path, uint8_t out_path_len, uint8_t extra_type, uint8_t* extra, uint8_t extra_len);
   virtual void onMessageRecv(const ContactInfo& contact, mesh::Packet* pkt, uint32_t sender_timestamp, const char *text) = 0;
   virtual void onCommandDataRecv(const ContactInfo& contact, mesh::Packet* pkt, uint32_t sender_timestamp, const char *text) = 0;
+  virtual void onCLICommandRecv(const ContactInfo& contact, mesh::Packet* pkt, uint32_t sender_timestamp, const char *text, char* reply) = 0;
   virtual void onSignedMessageRecv(const ContactInfo& contact, mesh::Packet* pkt, uint32_t sender_timestamp, const uint8_t *sender_prefix, const char *text) = 0;
   virtual uint32_t calcFloodTimeoutMillisFor(uint32_t pkt_airtime_millis) const = 0;
   virtual uint32_t calcDirectTimeoutMillisFor(uint32_t pkt_airtime_millis, uint8_t path_len) const = 0;
@@ -148,7 +160,7 @@ public:
   mesh::Packet* createSelfAdvert(const char* name);
   mesh::Packet* createSelfAdvert(const char* name, double lat, double lon);
   int  sendMessage(const ContactInfo& recipient, uint32_t timestamp, uint8_t attempt, const char* text, uint32_t& expected_ack, uint32_t& est_timeout);
-  int  sendCommandData(const ContactInfo& recipient, uint32_t timestamp, uint8_t attempt, const char* text, uint32_t& est_timeout);
+  int  sendCommandData(const ContactInfo& recipient, uint32_t timestamp, uint8_t attempt, uint8_t txt_type, const char* text, uint32_t& est_timeout);
   bool sendGroupMessage(uint32_t timestamp, mesh::GroupChannel& channel, const char* sender_name, const char* text, int text_len);
   bool sendGroupData(mesh::GroupChannel& channel, uint8_t* path, uint8_t path_len, uint16_t data_type, const uint8_t* data, int data_len);
   int  sendLogin(const ContactInfo& recipient, const char* password, uint32_t& est_timeout);
@@ -164,7 +176,8 @@ public:
   ContactInfo* lookupContactByPubKey(const uint8_t* pub_key, int prefix_len);
   bool  removeContact(ContactInfo& contact);
   bool  addContact(const ContactInfo& contact);
-  int getNumContacts() const { return num_contacts; }
+  int getTotalContactSlots() const { return num_contacts; }
+  int getNumContacts() const { return num_contacts - MAX_ANON_CONTACTS; }  // don't include the reserved slots at start
   bool getContactByIdx(uint32_t idx, ContactInfo& contact);
   ContactsIterator startContactsIterator();
   ChannelDetails* addChannel(const char* name, const char* psk_base64);

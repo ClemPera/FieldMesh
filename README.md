@@ -4,7 +4,7 @@
 
 <p align="center"><img src="docs/FieldMesh/images/hero_mountain.jpg" width="100%"></p>
 
-Built on [MeshCore](https://github.com/ripplebiz/MeshCore) ·  Based on MeshCore v1.15.0 ·  Download latest [release](../../releases/latest)
+Built on [MeshCore](https://github.com/ripplebiz/MeshCore) ·  Based on MeshCore v1.18.0 ·  Download latest [release](../../releases/latest)
 
 -----
 
@@ -83,6 +83,18 @@ Message length is limited to 20 characters. This feature is not available on the
 
 The home screen now shows an online node counter — the number of nodes heard in the last 30 minutes, combining advert senders and message senders. Displayed as ● X. The current mode (GPS-SHARE or OFF-GRID) is shown as a text indicator when active.
 
+### MeshCore v1.18.0 base (V6)
+
+V6 moves FieldMesh onto MeshCore v1.18.0. All FieldMesh features sit on top of the current upstream firmware, and the new upstream features are included:
+
+- **Repeater discovery page** — a new home screen page (before SOS) lists repeaters in direct range with signal strength; press Enter / long press to start a scan
+- **Charging indicator** — a lightning bolt (charging) or plug (full) next to the battery icon
+- **Startup tone** — short tune on boot (respects buzzer mute)
+- **Settings stored as JSON** — preferences are migrated automatically from the old format on first boot, including FieldMesh's saved Off-Grid return parameters
+- **Power saving on nRF52** — the CPU sleeps between events, plus all other upstream changes from v1.16 to v1.18
+
+**Updating from V5.x:** your contacts, channels and settings are kept. The old settings file is left in place, so going back to V5.x restores the settings as they were before the update (changes made in V6 are not carried back).
+
 ### UI & Usability
 
 - Splash screen with version info and "FieldMesh" branding
@@ -103,9 +115,9 @@ The home screen now shows an online node counter — the number of nodes heard i
 |------------------|--------------------------------|
 |**Tested on**     |Elecrow ThinkNode M1 (E-Ink), Seeed Wio Tracker L1 (OLED), Seeed T1000-E (no display)|
 |**Other hardware**|RAK WiseMesh TAG and similar single-button headless devices — contributions welcome|
-|**Base firmware** |MeshCore v1.14.1                |
+|**Base firmware** |MeshCore v1.18.0                |
 
-FieldMesh has been developed and tested on the ThinkNode M1 (E-Ink, single button) and the Wio Tracker L1 (OLED, joystick). V5.10 adds support for headless devices (no display, single button) — the Seeed T1000-E is the primary reference device for this class. The code is written to be portable — all hardware-specific pins are in `variant.h`, layout uses runtime display size checks, and joystick-specific UI behaviour is guarded by `#if UI_HAS_JOYSTICK`. If you test it on another platform, please open an issue with your findings.
+FieldMesh has been developed and tested on the ThinkNode M1 (E-Ink, single button) and the Wio Tracker L1 (OLED, joystick). V5.1 added support for headless devices (no display, single button) — the Seeed T1000-E is the primary reference device for this class. The code is written to be portable — all hardware-specific pins are in `variant.h`, layout uses runtime display size checks, and joystick-specific UI behaviour is guarded by `#if UI_HAS_JOYSTICK`. If you test it on another platform, please open an issue with your findings.
 
 -----
 
@@ -115,21 +127,20 @@ These files differ from upstream MeshCore. Everything else is untouched.
 
 |File                                        |What changed                                                                |
 |--------------------------------------------|----------------------------------------------------------------------------|
-|`src/helpers/BaseChatMesh.cpp`              |Stores GPS flag (Bit 4) in `contact.type`                                   |
-|`examples/companion_radio/AbstractUITask.h` |Adds `triggerSOS()` virtual stub; adds `newMsg()` signature with `is_favorite` param (V5)|
-|`examples/companion_radio/MyMesh.h`         |Auto-advert timer, AdvertPath struct, Off-Grid toggle declarations; `sendChannelMessage()` wrapper (V5)|
-|`examples/companion_radio/MyMesh.cpp`       |Core logic: auto-advert, Off-Grid mode, SOS send/receive, frequency ranges; channel message send (V5)|
-|`examples/companion_radio/NodePrefs.h`      |Four new fields for saving normal radio parameters                          |
-|`examples/companion_radio/DataStore.cpp`    |Saves/loads new fields; masks Bit 4 from contact persistence                |
-|`examples/companion_radio/ui-new/UITask.h`  |Outdoor menu, SOS screens, buzzer and backlight members; message history and compose screens (V5)|
-|`examples/companion_radio/ui-new/UITask.cpp`|All UI: tracking page, Haversine, outdoor menu, SOS screens, backlight logic; message history, filter, compose, channel select (V5)|
-|`examples/companion_radio/ui-new/icons.h`   |Adds 48×48px advert icon for large displays                                 |
-|`examples/companion_radio/ui-orig/Button.h` |Adds `QUINTUPLE_PRESS` event and `onQuintuplePress()` callback (V5.10)      |
-|`examples/companion_radio/ui-orig/Button.cpp`|Handles 5x click as distinct event; `== 4` fix for quadruple detection (V5.10)|
-|`examples/companion_radio/ui-orig/UITask.h` |Adds `handleButtonQuintuplePress()`, `triggerSOS()`, `_sos_active` flag; `newMsg()` signature synced with AbstractUITask (V5.2)|
-|`examples/companion_radio/ui-orig/UITask.cpp`|Off-Grid toggle via 5x click; SOS alarm via buzzer; forced buzzer feedback for all button actions (V5.10)|
+|`src/helpers/BaseChatMesh.h` / `.cpp`       |`lastAdvertHasLatLon()` — tells `onDiscoveredContact()` whether the current advert carried GPS (V6, replaces the former bit-4 flag in `contact.type`)|
+|`examples/companion_radio/MyMesh.h`         |Auto-advert timer, AdvertPath GPS fields, Off-Grid and SOS declarations; `sendChannelMessage()`, `isSenderFavorite()`, `extractSenderName()`|
+|`examples/companion_radio/MyMesh.cpp`       |Core logic: auto-advert, Off-Grid mode, SOS send, frequency ranges, channel message send, favourite lookup, GPS-validated adverts, BLE handshake guard (`_app_initialized`)|
+|`examples/companion_radio/NodePrefs.h`      |Off-Grid return parameters in a separate JSON object `"fm"` (V6)            |
+|`examples/companion_radio/DataStore.cpp`    |Migrates the Off-Grid return parameters from the old binary settings file (V6)|
+|`examples/companion_radio/main.cpp`         |Static BLE PIN on all devices (V6, moved here from `MyMesh.cpp`)            |
+|`examples/companion_radio/ui-new/UITask.h`  |All FieldMesh screens and members; MyMesh listener methods (V6)             |
+|`examples/companion_radio/ui-new/UITask.cpp`|All UI: tracking page, Haversine, outdoor menu, SOS screens, backlight logic, message history, filter, compose, channel select; message handling via MyMesh listener (V6)|
+|`examples/companion_radio/ui-new/icons.h`   |48×48px advert icon for large displays, node counter icon                   |
+|`examples/companion_radio/ui-orig/Button.h` |Adds `QUINTUPLE_PRESS` event and `onQuintuplePress()` callback (V5.1)       |
+|`examples/companion_radio/ui-orig/Button.cpp`|Handles 5x click as distinct event; `== 4` fix for quadruple detection (V5.1)|
+|`examples/companion_radio/ui-orig/UITask.h` |Adds `handleButtonQuintuplePress()`, `triggerSOS()`, `_sos_active` and `_buzzer_restore_quiet` flags|
+|`examples/companion_radio/ui-orig/UITask.cpp`|Off-Grid toggle via 5x click; SOS alarm via buzzer; forced buzzer feedback for all button actions|
 |`variants/thinknode_m1/variant.h`           |Corrects `PIN_BUTTON2` to GPIO 39                                           |
-|`variants/thinknode_m1/platformio.ini`      |Sets `AUTO_OFF_MILLIS=0` to prevent E-Ink display timeout                   |
 |`variants/wio-tracker-l1/target.cpp`        |Adds `joystick_up` / `joystick_down` MomentaryButton instances              |
 |`variants/wio-tracker-l1/target.h`          |Adds `extern` declarations for `joystick_up` / `joystick_down`              |
 

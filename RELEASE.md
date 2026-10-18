@@ -5,6 +5,45 @@ For full technical details, see the internal documentation PDF.
 
 ---
 
+## [V6.0] - MeshCore v1.18.0 Base
+
+FieldMesh now runs on MeshCore v1.18.0 (previously v1.15.0). All FieldMesh features are kept and sit on top of the current upstream firmware. New features will follow in V6.x.
+
+### New from upstream (MeshCore v1.16 – v1.18)
+
+- **Repeater discovery page** (`ui-new`) — new home screen page before the SOS page; scans for repeaters in direct range and shows their signal strength
+- **Charging indicator** (`ui-new`) — lightning bolt while charging, plug when full, next to the battery icon
+- **Startup tone** — short tune on boot on all devices with a buzzer (respects buzzer mute)
+- **Low-battery shutdown** — no longer shuts down while externally powered; the warning is shown on all display types
+- **Settings stored as JSON** (`/prefs.json`) — migrated automatically from the old binary format on first boot
+- **Power saving on nRF52** — CPU sleeps between events
+- **T1000-E** — RGB status LED and vibration motor support from upstream `ui-orig`
+- Plus all other upstream changes: multi-interface companion (BLE/USB/WiFi), companion CLI, 5-byte ACKs, reserved anonymous contact slots, new display colour API
+
+### Changes
+
+- **UI decoupled from MyMesh** — MeshCore v1.18 introduced a listener interface; FieldMesh's message handling (history only when the app is not connected, online node counter, SOS detection, favourites, advert refresh on RECENT/TRACKING) moved from `MyMesh.cpp` into the UI (`ui-new` and `ui-orig`). `MyMesh.cpp` is now much closer to upstream
+- **Off-Grid return parameters** are stored in their own JSON object `"fm"` in the settings file and migrated from V5.x
+- **GPS flag of adverts** is now passed via `BaseChatMesh::lastAdvertHasLatLon()` instead of bit 4 (`0x10`) in `contact.type` — `contact.type` is no longer modified, the three masking points are gone
+- **Static BLE PIN** moved to `main.cpp` (upstream moved the PIN logic there)
+- Off-Grid uses the upstream radio wrapper call `radio_driver.setParams()` (upstream removed `radio_set_params()`)
+- Splash screen shows "v6"
+
+### Bug Fixes
+
+- **Room server login with GPS adverts** — a room server whose last advert contained GPS had `type = 0x13` instead of `0x03` (bit 4), so the login was sent in the wrong format; fixed by the new GPS flag approach
+- **Favourite detection with a full contact list** — `isSenderFavorite()` now also checks the last 8 contacts (upstream added 8 reserved slots at the start of the contact table)
+- **CLI text messages** (`TXT_TYPE_CLI_COMMAND`, new in upstream) are not shown in the message history
+- `_msgcount` is now initialised in `UITask` (`ui-new`)
+
+### Updating from V5.x
+
+- Contacts and channels are kept (file format unchanged)
+- Settings are migrated to `/prefs.json`; the old `/new_prefs` file is left in place, so going back to V5.x restores the settings as they were before the update
+- New home screen page: page indicator shows one more dot
+
+---
+
 ## [V5.2] - HomeScreen Overhaul & Reliability Fixes
  
 ### New Features
