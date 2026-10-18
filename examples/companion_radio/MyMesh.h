@@ -111,6 +111,8 @@ public:
       virtual void onTraceRecv(mesh::Packet *pkt, uint32_t tag, uint32_t auth_code, uint8_t flags,
                                const uint8_t *path_snrs, const uint8_t *path_hashes, uint8_t path_len) { }
       virtual void onRawDataRecv(mesh::Packet *pkt) { }
+      // FieldMesh (#23): RTC jumped by delta_secs (app time sync, GPS) — shift stored timestamps
+      virtual void onClockAdjusted(int32_t delta_secs) { }
       virtual ~Listener() { }
   };
 
@@ -306,6 +308,11 @@ private:
   AdvertPath advert_paths[ADVERT_PATH_TABLE_SIZE]; // circular table
 
   unsigned long next_auto_advert;  // millis() timestamp for next auto-advert (0=inactive)
+
+  // FieldMesh (#23): RTC jump detection — reference point (RTC seconds + millis) of the last check
+  uint32_t _clk_ref_rtc;
+  unsigned long _clk_ref_ms;
+  void checkClockJump();
 
 public:
   // Auto-advert is active when GPS sharing is enabled

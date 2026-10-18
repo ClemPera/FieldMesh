@@ -192,6 +192,7 @@ public:
   void onQueueSizeChanged(int msgcount) override;
   void onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path_len, const uint8_t* path) override;
   void onControlDataRecv(const mesh::Packet* pkt) override;
+  void onClockAdjusted(int32_t delta_secs) override;   // V6 (#23)
 
   // FieldMesh message handling (called from the listener methods above)
   void msgRead(int msgcount);

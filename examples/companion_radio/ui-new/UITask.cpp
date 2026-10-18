@@ -45,6 +45,13 @@ static void formatRelTime(char* buf, size_t buf_size, uint32_t now, uint32_t the
   else if (secs < 3600) snprintf(buf, buf_size, "%um", secs / 60);
   else                  snprintf(buf, buf_size, "%uh", secs / 3600);
 }
+// V6 (#23): shift a stored RTC timestamp after a clock correction (0 = unset, left as is)
+static void shiftTimestamp(uint32_t& ts, int32_t delta_secs) {
+  if (ts == 0) return;
+  int64_t v = (int64_t)ts + delta_secs;
+  ts = (v > 1) ? (uint32_t)v : 1;
+}
+
 static float calcDistance(double lat1, double lon1, double lat2, double lon2) {
   if (lat1 == 0.0 && lon1 == 0.0) return -1.0f;  // eigene Position unbekannt
   if (lat2 == 0.0 && lon2 == 0.0) return -1.0f;  // andere Position unbekannt
@@ -951,6 +958,13 @@ public:
 
   int getNumTotal() const { return num_total; }
 
+  // V6 (#23): clock correction — keep relative times plausible
+  void shiftTimestamps(int32_t delta_secs) {
+    for (int i = 0; i < MAX_HISTORY_MSGS; i++) {
+      if (history[i].valid) shiftTimestamp(history[i].timestamp, delta_secs);
+    }
+  }
+
   int render(DisplayDriver& display) override {
     display.setTextSize(1);
 
@@ -1269,6 +1283,11 @@ class FavPreviewScreen : public UIScreen {
 
 public:
   FavPreviewScreen(UITask* task, mesh::RTCClock* rtc) : _task(task), _rtc(rtc) {}
+
+  // V6 (#23): clock correction — keep relative time plausible
+  void shiftTimestamps(int32_t delta_secs) {
+    if (_has_entry) shiftTimestamp(_entry.timestamp, delta_secs);
+  }
 
   // Called by UITask::newMsg() — always overwrites the last entry.
   void setMessage(uint8_t path_len, const char* from_name, const char* text, const char* channel_name = nullptr) {
@@ -2161,6 +2180,18 @@ void UITask::onControlDataRecv(const mesh::Packet* packet) {
     }
   }
 #endif
+}
+
+// V6 (#23): RTC was corrected (app time sync / GPS) — shift all timestamps stored by the UI
+// (MyMesh shifts advert_paths[] itself before calling this)
+void UITask::onClockAdjusted(int32_t delta_secs) {
+  ((MsgHistoryScreen*) msg_history)->shiftTimestamps(delta_secs);
+  ((FavPreviewScreen*) fav_preview)->shiftTimestamps(delta_secs);
+  for (int i = 0; i < ONLINE_CACHE_SIZE; i++) {
+    if (_online_nodes[i].name[0] != 0) shiftTimestamp(_online_nodes[i].last_seen, delta_secs);
+  }
+  shiftTimestamp(_latest_fav_time, delta_secs);
+  _next_refresh = 100;  // re-render with corrected relative times
 }
 
 void UITask::msgRead(int msgcount) {

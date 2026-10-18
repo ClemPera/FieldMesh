@@ -498,7 +498,9 @@ bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
 }
 
 void MyMesh::sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis) {
-  if (scope.isNull()) {
+  // FieldMesh (#25): Off-Grid / client repeat always floods un-scoped, so every node
+  // on the off-grid frequency relays it regardless of default-scope / region settings
+  if (scope.isNull() || _prefs.isRepeatEn()) {
     sendFlood(pkt, delay_millis, _prefs.path_hash_mode + 1);
   } else {
     uint16_t codes[2];
@@ -972,6 +974,8 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   sign_data = NULL;
   dirty_contacts_expiry = 0;
   next_auto_advert = 0;  // disabled until prefs loaded
+  _clk_ref_rtc = 0;
+  _clk_ref_ms = 0;       // 0 = not anchored yet (first loop() sets the reference)
   memset(advert_paths, 0, sizeof(advert_paths));
   memset(send_scope.key, 0, sizeof(send_scope.key));
   send_unscoped = false;
@@ -2588,6 +2592,51 @@ void MyMesh::loop() {
   if (next_auto_advert && millisHasNowPassed(next_auto_advert)) {
     advert();
     next_auto_advert = futureMillis(AUTO_ADVERT_INTERVAL_MS);  // schedule next
+  }
+
+  checkClockJump();  // FieldMesh (#23)
+}
+
+// FieldMesh (#23): detect RTC jumps and shift stored timestamps.
+// Without a phone or GPS fix the RTC starts near epoch / at a stale value. When the app
+// (CMD_SET_DEVICE_TIME) or GPS later corrects the clock, timestamps recorded before the
+// correction would yield implausible relative times ("129h"). Instead of hooking every
+// time source, compare the RTC against millis(): a deviation of more than
+// CLOCK_JUMP_THRESHOLD_SECS is treated as a clock correction.
+#define CLOCK_JUMP_THRESHOLD_SECS  60
+
+void MyMesh::checkClockJump() {
+  uint32_t now = getRTCClock()->getCurrentTime();
+  unsigned long ms = millis();
+  if (_clk_ref_ms == 0) {         // first call: anchor only
+    _clk_ref_rtc = now;
+    _clk_ref_ms = ms ? ms : 1;
+    return;
+  }
+  unsigned long elapsed_ms = ms - _clk_ref_ms;
+  int64_t expected = (int64_t)_clk_ref_rtc + (int64_t)(elapsed_ms / 1000);
+  int64_t delta = (int64_t)now - expected;
+
+  if (delta > CLOCK_JUMP_THRESHOLD_SECS || delta < -CLOCK_JUMP_THRESHOLD_SECS) {
+    int32_t d = (int32_t)delta;
+    for (int i = 0; i < ADVERT_PATH_TABLE_SIZE; i++) {
+      auto p = &advert_paths[i];
+      if (p->recv_timestamp) {
+        int64_t v = (int64_t)p->recv_timestamp + d;
+        p->recv_timestamp = (v > 1) ? (uint32_t)v : 1;
+      }
+      if (p->gps_timestamp) {
+        int64_t v = (int64_t)p->gps_timestamp + d;
+        p->gps_timestamp = (v > 1) ? (uint32_t)v : 1;
+      }
+    }
+    if (_listener) _listener->onClockAdjusted(d);
+    _clk_ref_rtc = now;
+    _clk_ref_ms = ms;
+  } else if (elapsed_ms >= 60000) {
+    // re-anchor once a minute so slow drift never adds up to a false "jump"
+    _clk_ref_rtc = now;
+    _clk_ref_ms = ms;
   }
 }
 
