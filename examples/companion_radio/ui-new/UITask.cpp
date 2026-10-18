@@ -2,7 +2,8 @@
 #include <helpers/TxtDataHelpers.h>
 #include "../MyMesh.h"
 #include "target.h"
-#ifdef WIFI_SSID
+#include <time.h>
+#ifdef ENABLE_WIFI_INTERFACE
   #include <WiFi.h>
 #endif
 
@@ -23,11 +24,12 @@
 // Value '\x10' does not collide with any known MeshCore KEY_* value.
 #define KEY_BACK  '\x10'
 
+// Used both for recent adverts and discovered nodes
 #ifndef UI_RECENT_LIST_SIZE
   #define UI_RECENT_LIST_SIZE 4
 #endif
 
-#if UI_HAS_JOYSTICK
+#if UI_HAS_JOYSTICK || UI_HAS_ROTARY_INPUT
   #define PRESS_LABEL "press Enter"
 #else
   #define PRESS_LABEL "long press"
@@ -81,10 +83,10 @@ public:
       // ── Large display (M1/M5, 200px) — two-group layout ─────────────
       // Gruppe oben: Logo + Version + Datum
       int logoWidth = 128;
-      display.setColor(DisplayDriver::BLUE);
+      display.setColor(UIColor::primary_txt);
       display.drawXbm((display.width() - logoWidth) / 2, 4, meshcore_logo, logoWidth, 13);
 
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
       display.setTextSize(2);
       display.drawTextCentered(display.width() / 2, 22, _version_info);
 
@@ -95,24 +97,34 @@ public:
 
       // Gruppe unten: "FieldMesh" dominant + "v3" direkt darunter
       display.setTextSize(3);
-      display.setColor(DisplayDriver::YELLOW);
+      display.setColor(UIColor::primary_txt);
       display.drawTextCentered(display.width() / 2, display.height() - 42, "FieldMesh");
 
       display.setTextSize(2);
-      display.setColor(DisplayDriver::GREEN);
-      display.drawTextCentered(display.width() / 2, display.height() - 20, "v5");
+      display.setColor(UIColor::primary_txt);
+      display.drawTextCentered(display.width() / 2, display.height() - 20, "v6");
     } else {
-      // ── Kleines Display (Heltec V3/Techo, 64/80px) — kompaktes Layout ─
+      // ── Kleines Display (L1/Heltec V3/Techo, 64/80px) — Upstream v1.18 Layout ─
       int logoWidth = 128;
-      display.setColor(DisplayDriver::BLUE);
+      display.setColor(UIColor::corp_blue);
       display.drawXbm((display.width() - logoWidth) / 2, 3, meshcore_logo, logoWidth, 13);
 
-      display.setColor(DisplayDriver::LIGHT);
-      display.setTextSize(2);
-      display.drawTextCentered(display.width() / 2, 22, _version_info);
-
+      // meshcore website
+      const char* website = "https://meshcore.io";
+      display.setColor(UIColor::primary_txt);
       display.setTextSize(1);
-      display.drawTextCentered(display.width() / 2, 42, FIRMWARE_BUILD_DATE);
+      uint16_t websiteWidth = display.getTextWidth(website);
+      display.setCursor((display.width() - websiteWidth) / 2, 22);
+      display.print(website);
+
+      // version info
+      display.setColor(UIColor::primary_txt);
+      display.setTextSize(1);
+      display.drawTextCentered(display.width()/2, 35, _version_info);
+
+      display.setColor(UIColor::secondary_txt);
+      display.setTextSize(1);
+      display.drawTextCentered(display.width()/2, 48, FIRMWARE_BUILD_DATE);
     }
 
     return 1000;
@@ -137,6 +149,9 @@ class HomeScreen : public UIScreen {
 #if UI_SENSORS_PAGE == 1
     SENSORS,
 #endif
+#if UI_DISCOVER_SCREEN
+    DISCOVERY,  // V6: upstream repeater discovery page
+#endif
     SOS,     // V3: SOS page (after GPS, before count)
     Count    // keep as last
   };
@@ -148,7 +163,13 @@ class HomeScreen : public UIScreen {
   uint8_t _page;
   bool _shutdown_init;
   AdvertPath recent[UI_RECENT_LIST_SIZE];
-
+#if UI_DISCOVER_SCREEN
+  DiscoveredNode discovered[DISCOVERED_NODES_TABLE_SIZE]; // not circular, latest discovered nodes are not kept
+  uint32_t disc_node_req_tag = 0;
+  uint32_t disc_nodes_count = 0;
+  uint32_t discovery_req_time = 0;
+  bool discovery_disp_names = true; // by default desplay names if available (removes SNR_O)
+#endif
 
   void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts) {
     // Convert millivolts to percentage
@@ -169,7 +190,7 @@ class HomeScreen : public UIScreen {
     int iconHeight = 10;
     int iconX = display.width() - iconWidth - 5; // Position the icon near the top-right corner
     int iconY = 0;
-    display.setColor(DisplayDriver::GREEN);
+    display.setColor(UIColor::primary_txt);
 
     // battery outline
     display.drawRect(iconX, iconY, iconWidth, iconHeight);
@@ -181,11 +202,24 @@ class HomeScreen : public UIScreen {
     int fillWidth = (batteryPercentage * (iconWidth - 4)) / 100;
     display.fillRect(iconX + 2, iconY + 2, fillWidth, iconHeight - 4);
 
-    // show muted icon if buzzer is muted
+    // while charging, show a bolt (or a plug once full) just left of the battery,
+    // keeping the fill bar itself clean and uninterrupted
+    bool charging = board.isExternalPowered();
+    if (charging) {
+      // There's no charge-complete signal on most boards, so "full" is a high
+      // voltage band rather than an exact 100% (a real pack rarely reads 4.2V).
+      const int BATT_FULL_PCT = 95;
+      const uint8_t* symbol = (batteryPercentage >= BATT_FULL_PCT) ? plug_icon : charging_icon;
+      display.setColor(UIColor::title_txt);
+      display.drawXbm(iconX - 9, iconY + 1, symbol, 8, 8);
+    }
+
+    // show muted icon if buzzer is muted (shifted further left when the charging
+    // icon already occupies the slot immediately left of the battery)
 #ifdef PIN_BUZZER
     if (_task->isBuzzerQuiet()) {
-      display.setColor(DisplayDriver::RED);
-      display.drawXbm(iconX - 9, iconY + 1, muted_icon, 8, 8);
+      display.setColor(UIColor::warning_txt);
+      display.drawXbm(iconX - (charging ? 18 : 9), iconY + 1, muted_icon, 8, 8);
     }
 #endif
   }
@@ -222,6 +256,40 @@ public:
      : _task(task), _rtc(rtc), _sensors(sensors), _node_prefs(node_prefs), _page(0), 
        _shutdown_init(false), sensors_lpp(200) {  }
 
+#if UI_DISCOVER_SCREEN
+  bool sendDiscoverRequest() {
+    uint8_t cmd_bytes[6];
+    cmd_bytes[0] = CTL_TYPE_NODE_DISCOVER_REQ | 1; // DISCOVER_REQ | prefix only
+    cmd_bytes[1] = 0xFF;     // Repeaters
+    the_mesh.getRNG()->random((uint8_t *) &disc_node_req_tag, 4);  // generate random tag
+    memcpy(&cmd_bytes[2], &disc_node_req_tag, 4);
+    disc_nodes_count = 0;
+    mesh::Packet* req = the_mesh.createControlData(cmd_bytes, sizeof(cmd_bytes));
+    if (req) {
+      the_mesh.sendZeroHop(req);
+      discovery_req_time = millis();
+      return true;
+    }
+    return false;
+  }
+
+  void handleDiscoverResponse(const mesh::Packet* packet) {
+    if (disc_nodes_count < DISCOVERED_NODES_TABLE_SIZE && memcmp(&packet->payload[2], &disc_node_req_tag, 4) == 0) {
+      auto d = &discovered[disc_nodes_count++];
+      memcpy(d->pubkey_prefix, &packet->payload[6], 8);
+      d->type = packet->payload[0] & 0xF;
+      d->snr_out = ((int8_t)packet->payload[1]) / 4.0;
+      d->snr_in = radio_driver.getLastSNR();
+      ContactInfo* c = the_mesh.lookupContactByPubKey(&packet->payload[6], 8);
+      if (c != NULL) {
+        strncpy(d->name, c->name, 32);
+      } else {
+        d->name[0] = 0;
+      }
+    }
+  }
+#endif
+
   void poll() override {
     if (_shutdown_init && !_task->isButtonPressed()) {  // must wait for USR button to be released
       _task->shutdown();
@@ -232,7 +300,7 @@ public:
     char tmp[80];
     // node name
     display.setTextSize(1);
-    display.setColor(DisplayDriver::GREEN);
+    display.setColor(UIColor::primary_txt);
     char filtered_name[sizeof(_node_prefs->node_name)];
     display.translateUTF8ToBlocks(filtered_name, _node_prefs->node_name, sizeof(filtered_name));
     display.setCursor(0, 0);
@@ -254,7 +322,7 @@ public:
 
     if (_page == HomePage::FIRST) {
       display.setTextSize(1);
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
 
       // -- Online counter: combine advert senders + message-only senders (no double-counting)
       // Time window: 30 minutes = 1800 seconds
@@ -371,7 +439,22 @@ public:
         // else: line 2 stays empty
       }
 
-      #ifdef WIFI_SSID
+      #ifdef UI_SHOW_CLOCK
+      // V6: upstream clock (build flag, off by default on M1/L1) — large displays only
+      if (display.height() >= 128) {
+        display.setTextSize(3);
+        uint32_t now = _rtc->getCurrentTime();
+        now += (int32_t)_node_prefs->tz_offset * 3600;
+        DateTime dt (now);
+        sprintf(tmp, "%02d:%02d", dt.hour(), dt.minute());
+        display.drawTextCentered(display.width() / 2, 90, tmp);
+        display.setTextSize(1);
+        sprintf(tmp, "%02d/%02d/%d", dt.day(), dt.month(), dt.year());
+        display.drawTextCentered(display.width() / 2, 115, tmp);
+      }
+      #endif
+
+      #ifdef ENABLE_WIFI_INTERFACE
         IPAddress ip = WiFi.localIP();
         snprintf(tmp, sizeof(tmp), "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
         display.setTextSize(1);
@@ -380,7 +463,7 @@ public:
 
       // Footer hint line
       display.setCursor(0, display.height() - 13);
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
       display.setTextSize(1);
 #if UI_HAS_JOYSTICK
       display.print("Messages: press Enter");
@@ -389,7 +472,7 @@ public:
 #endif
     } else if (_page == HomePage::RECENT) {
       the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE);
-      display.setColor(DisplayDriver::GREEN);
+      display.setColor(UIColor::primary_txt);
       int y = 20;
       int max_y = (display.height() >= 128) ? 53 : 42;
       for (int i = 0; i < UI_RECENT_LIST_SIZE && y <= max_y; i++, y += 11) {
@@ -413,11 +496,11 @@ public:
         display.setCursor(display.width() - timestamp_width - 1, y);
         display.print(tmp);
       }
-      display.setColor(DisplayDriver::GREEN);
+      display.setColor(UIColor::primary_txt);
       display.drawTextCentered(display.width() / 2, display.height() - 13, "Advert: " PRESS_LABEL);
     } else if (_page == HomePage::TRACKING) {
       the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE);
-      display.setColor(DisplayDriver::GREEN);
+      display.setColor(UIColor::primary_txt);
       display.setTextSize(1);
       bool own_gps = (sensors.node_lat != 0.0 || sensors.node_lon != 0.0);
 #if ENV_INCLUDE_GPS == 1
@@ -460,7 +543,7 @@ public:
           else                  sprintf(dist_buf, "%.1fkm", dist / 1000.0f);
         }
 
-        display.setColor(secs < 300 ? DisplayDriver::GREEN : DisplayDriver::YELLOW);
+        display.setColor(secs < 300 ? UIColor::primary_txt : UIColor::primary_txt);
 
         char right_buf[20];
         sprintf(right_buf, "%s %s", time_buf, dist_buf);
@@ -474,7 +557,7 @@ public:
         y += 11;  // only increment if the node was actually rendered
       }
 
-      display.setColor(DisplayDriver::GREEN);
+      display.setColor(UIColor::primary_txt);
 #if UI_HAS_JOYSTICK
       display.drawTextCentered(display.width() / 2, display.height() - 13, "Settings: press Enter");
 #else
@@ -621,23 +704,59 @@ public:
       if (sensors_scroll) sensors_scroll_offset = (sensors_scroll_offset+1)%sensors_nb;
       else sensors_scroll_offset = 0;
 #endif
+#if UI_DISCOVER_SCREEN
+    } else if (_page == HomePage::DISCOVERY) {
+      // V6: upstream repeater discovery page
+      int count = disc_nodes_count;
+      display.setColor(UIColor::primary_txt);
+      display.setTextSize(1);
+      int y = 20;
+      for (int i = 0; i < count; i++, y += 11) {
+        char name[32];
+        auto a = &discovered[i];
+        if ((a->name[0] == 0) || !discovery_disp_names) {
+          mesh::Utils::toHex(name, a->pubkey_prefix, 4);
+        } else {
+          strncpy(name, a->name, 32);
+        }
+        char filtered_name[sizeof(name)];
+        char snr_s[12];
+        if (strlen(name) <= 8) { // display snr_o
+          sprintf(snr_s, "%02.1f>%02.1f", a->snr_out, a->snr_in);
+        } else {
+          sprintf(snr_s, "%02.1f", a->snr_in);
+        }
+        int snr_width = display.getTextWidth(snr_s);
+        int max_name_width = display.width() - snr_width - 1;
+        display.translateUTF8ToBlocks(filtered_name, name, sizeof(filtered_name));
+        display.drawTextEllipsized(0, y, max_name_width, filtered_name);
+        display.setCursor(display.width() - snr_width - 1, y);
+        display.print(snr_s);
+      }
+      if (millis() < discovery_req_time + 5000) {
+        return 1000; // more frequent updates just after req
+      } else if (count < DISCOVERED_NODES_TABLE_SIZE -1) { // show only 5 sec after last disc
+        // FieldMesh: hint line at the usual footer position (relative to display height)
+        display.drawTextCentered(display.width() / 2, display.height() - 13, "Discover: " PRESS_LABEL);
+      }
+#endif
     } else if (_page == HomePage::SOS) {
       // V3: SOS page — icon + hint for long press
       if (display.height() >= 128) {
         // Large display: "SOS" + icon in upper half
         // Icon at same position as SOSSendScreen (display.height()/2 - 24)
-        display.setColor(DisplayDriver::RED);
+        display.setColor(UIColor::warning_txt);
         display.setTextSize(3);
         display.drawTextCentered(display.width() / 2, 30, "SOS");
         display.setTextSize(1);
-        display.setColor(DisplayDriver::LIGHT);
+        display.setColor(UIColor::primary_txt);
         display.drawXbm((display.width() - 48) / 2, display.height() / 2 - 24, advert_icon_large, 48, 48);
       } else {
         // Small display: compact icon, keep existing size
-        display.setColor(DisplayDriver::LIGHT);
+        display.setColor(UIColor::primary_txt);
         display.drawXbm((display.width() - 32) / 2, 16, advert_icon, 32, 32);
       }
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
       display.setTextSize(1);
       display.drawTextCentered(display.width() / 2, display.height() - 13, "SOS: " PRESS_LABEL);
     }
@@ -657,6 +776,11 @@ public:
       if (_page == HomePage::TRACKING) {
         _task->showAlert("Tracking", 800);
       }
+#if UI_DISCOVER_SCREEN
+      if (_page == HomePage::DISCOVERY) {
+        _task->showAlert("Repeater disc", 800);
+      }
+#endif
       return true;
     }
 #if UI_HAS_JOYSTICK
@@ -679,9 +803,26 @@ public:
       return true;
     }
 #endif
+#if UI_DISCOVER_SCREEN
+    if (c == KEY_ENTER && _page == HomePage::DISCOVERY) {
+      if (millis() > discovery_req_time + 5000) { // rate limiter
+        sendDiscoverRequest();
+      }
+      return true;
+    }
+    if (c == KEY_SELECT && _page == HomePage::DISCOVERY) {
+      discovery_disp_names = !discovery_disp_names;
+      return true;
+    }
+#endif
     return false;
   }
 
+#if UI_DISCOVER_SCREEN
+  bool isOnDiscoveryPage() const { return _page == HomePage::DISCOVERY; }  // V6
+#else
+  bool isOnDiscoveryPage() const { return false; }
+#endif
   bool isOnRecentPage()   const { return _page == HomePage::RECENT; }
   bool isOnTrackingPage() const { return _page == HomePage::TRACKING; }
   bool isOnSOSPage()      const { return _page == HomePage::SOS; }       // V3
@@ -827,11 +968,11 @@ public:
     }
 
     if (visible == 0) {
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
       display.fillRect(0, 0, display.width(), 11);
-      display.setColor(DisplayDriver::DARK);
+      display.setColor(UIColor::window_bkg);
       display.drawTextCentered(display.width() / 2, 1, "Messages");
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
       const char* msg = _show_favorites_only ? "No favorites" : "No messages";
       display.drawTextCentered(display.width() / 2, display.height() / 2 - 4, msg);
 #if !UI_HAS_JOYSTICK
@@ -845,9 +986,9 @@ public:
 
     // Title bar: channel tag + name left-aligned, time right-aligned (M1)
     // Auf L1: zentriert (wenig Platz)
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.fillRect(0, 0, display.width(), 11);
-    display.setColor(DisplayDriver::DARK);
+    display.setColor(UIColor::window_bkg);
 
     char filtered_name[33];
     display.translateUTF8ToBlocks(filtered_name, p->from_name, sizeof(filtered_name));
@@ -888,11 +1029,11 @@ public:
       }
       display.drawTextCentered(display.width() / 2, 1, title);
     }
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
 
     if (display.height() >= 128) {
       // M1: Trennlinie + Nachrichtentext + Fusszeile
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
       display.drawRect(0, 12, display.width(), 1);
 
       char filtered_msg[sizeof(p->msg)];
@@ -905,13 +1046,13 @@ public:
     } else {
       // L1: time in yellow, then text
       display.setCursor(0, 13);
-      display.setColor(DisplayDriver::YELLOW);
+      display.setColor(UIColor::primary_txt);
       display.print(time_buf);
 
       char filtered_msg[sizeof(p->msg)];
       display.translateUTF8ToBlocks(filtered_msg, p->msg, sizeof(filtered_msg));
       display.setCursor(0, 24);
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
       display.printWordWrap(filtered_msg, display.width());
       // No footer on L1 — back key is a physical button
     }
@@ -997,11 +1138,11 @@ public:
     display.setTextSize(1);
 
     // Titelzeile invertiert
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.fillRect(0, 0, display.width(), 11);
-    display.setColor(DisplayDriver::DARK);
+    display.setColor(UIColor::window_bkg);
     display.drawTextCentered(display.width() / 2, 1, "Messages");
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
 
 #if UI_HAS_JOYSTICK
     // L1: 3-line menu
@@ -1011,9 +1152,9 @@ public:
       bool sel = (i == (uint8_t)_cursor);
       if (sel) {
         display.fillRect(0, y - 1, display.width(), 12);
-        display.setColor(DisplayDriver::DARK);
+        display.setColor(UIColor::window_bkg);
       } else {
-        display.setColor(DisplayDriver::LIGHT);
+        display.setColor(UIColor::primary_txt);
       }
       display.setCursor(0, y);
       display.print(sel ? ">" : " ");
@@ -1026,7 +1167,7 @@ public:
       } else {
         display.print(rows[i]);
       }
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
     }
 #else
     // M1: 3-line menu (All / Favorites / Back) — analogous to OutdoorMenuScreen
@@ -1035,13 +1176,13 @@ public:
       int y = 16 + i * 16;
       bool sel = (i == (uint8_t)_cursor);
       display.setCursor(0, y);
-      display.setColor(sel ? DisplayDriver::YELLOW : DisplayDriver::LIGHT);
+      display.setColor(sel ? UIColor::primary_txt : UIColor::primary_txt);
       display.print(sel ? "> " : "  ");
       display.print(labels[i]);
     }
     // M1: Hinweistext
     display.setCursor(0, display.height() - 13);
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.print("short=next  long=select");
 #endif
     return 200;
@@ -1157,9 +1298,9 @@ public:
     }
 
     // Titelzeile: Channel-Tag + Name + * (invertiert wie ueberall)
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.fillRect(0, 0, display.width(), 11);
-    display.setColor(DisplayDriver::DARK);
+    display.setColor(UIColor::window_bkg);
     char filtered_name[33];
     display.translateUTF8ToBlocks(filtered_name, _entry.from_name, sizeof(filtered_name));
 
@@ -1192,7 +1333,7 @@ public:
       }
       display.drawTextCentered(display.width() / 2, 1, title);
     }
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
 
     if (display.height() >= 128) {
       // M1: Trennlinie + Nachrichtentext
@@ -1205,13 +1346,13 @@ public:
     } else {
       // L1: time in yellow, then text
       display.setCursor(0, 13);
-      display.setColor(DisplayDriver::YELLOW);
+      display.setColor(UIColor::primary_txt);
       display.print(time_buf);
 
       char filtered_msg[sizeof(_entry.msg)];
       display.translateUTF8ToBlocks(filtered_msg, _entry.msg, sizeof(filtered_msg));
       display.setCursor(0, 24);
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
       display.printWordWrap(filtered_msg, display.width());
     }
 
@@ -1294,13 +1435,13 @@ public:
       ch_name_buf[16] = 0;
       ch_name = ch_name_buf;
     }
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.fillRect(0, 0, display.width(), 11);
-    display.setColor(DisplayDriver::DARK);
+    display.setColor(UIColor::window_bkg);
     char title[32];
     snprintf(title, sizeof(title), "Send > %s", ch_name);
     display.drawTextCentered(display.width() / 2, 1, title);
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
 
     // Input line with cursor
     display.setCursor(0, 13);
@@ -1315,9 +1456,9 @@ public:
     snprintf(cnt, sizeof(cnt), "%d/20", _text_len);
     int cw = display.getTextWidth(cnt);
     display.setCursor(display.width() - cw - 1, 1);
-    display.setColor(DisplayDriver::DARK);  // im invertierten Titelbereich
+    display.setColor(UIColor::window_bkg);  // im invertierten Titelbereich
     display.print(cnt);
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
 
     // Keyboard-Grid — 4 Zeilen ab y=24, je 10px Abstand
     for (uint8_t r = 0; r < 4; r++) {
@@ -1334,9 +1475,9 @@ public:
 
         if (sel) {
           display.fillRect(x, y - 1, cell_w - 1, 9);
-          display.setColor(DisplayDriver::DARK);
+          display.setColor(UIColor::window_bkg);
         } else {
-          display.setColor(DisplayDriver::LIGHT);
+          display.setColor(UIColor::primary_txt);
         }
         display.setCursor(x + 1, y);
         // Sonderzeichen lesbarer darstellen
@@ -1347,7 +1488,7 @@ public:
           char s[2] = { ch_char, 0 };
           display.print(s);
         }
-        display.setColor(DisplayDriver::LIGHT);
+        display.setColor(UIColor::primary_txt);
       }
     }
 
@@ -1447,11 +1588,11 @@ public:
     display.setTextSize(1);
 
     // Titelzeile
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.fillRect(0, 0, display.width(), 11);
-    display.setColor(DisplayDriver::DARK);
+    display.setColor(UIColor::window_bkg);
     display.drawTextCentered(display.width() / 2, 1, "Select Channel");
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
 
     if (_ch_count == 0) {
       display.drawTextCentered(display.width() / 2, display.height() / 2 - 4, "No channels");
@@ -1464,15 +1605,15 @@ public:
       bool sel = (i == _cursor);
       if (sel) {
         display.fillRect(0, y - 1, display.width(), 11);
-        display.setColor(DisplayDriver::DARK);
+        display.setColor(UIColor::window_bkg);
       } else {
-        display.setColor(DisplayDriver::LIGHT);
+        display.setColor(UIColor::primary_txt);
       }
       display.setCursor(0, y);
       display.print(sel ? ">" : " ");
       display.setCursor(8, y);
       display.print(_ch_names[i]);
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
     }
     return 200;
   }
@@ -1545,11 +1686,11 @@ public:
     display.setTextSize(1);
 
     // Titelzeile
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.fillRect(0, 0, display.width(), 11);
-    display.setColor(DisplayDriver::DARK);
+    display.setColor(UIColor::window_bkg);
     display.drawTextCentered(display.width() / 2, 1, "Outdoor Settings");
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
 
     // Menu entries
     for (uint8_t i = 0; i < (uint8_t)COUNT; i++) {
@@ -1558,9 +1699,9 @@ public:
 
       if (selected) {
         display.fillRect(0, y - 1, display.width(), 12);
-        display.setColor(DisplayDriver::DARK);
+        display.setColor(UIColor::window_bkg);
       } else {
-        display.setColor(DisplayDriver::LIGHT);
+        display.setColor(UIColor::primary_txt);
       }
 
       // Pfeil-Cursor
@@ -1579,7 +1720,7 @@ public:
         display.print(b);
       }
 
-      display.setColor(DisplayDriver::LIGHT);
+      display.setColor(UIColor::primary_txt);
     }
 
     // Footer — only on devices without joystick (joystick operation is self-explanatory)
@@ -1704,18 +1845,18 @@ public:
     display.setTextSize(1);
 
     // Titelzeile invertiert
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.fillRect(0, 0, display.width(), 11);
-    display.setColor(DisplayDriver::DARK);
+    display.setColor(UIColor::window_bkg);
     display.drawTextCentered(display.width() / 2, 1, "!! SOS ALARM !!");
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
 
     if (display.height() >= 128) {
       // Large display: large icon (48×48), node name size 2 (fallback size 1 for 15+ characters)
       display.drawXbm((display.width() - 48) / 2, 16, advert_icon_large, 48, 48);
 
       display.setTextSize(strlen(_node_name) >= 15 ? 1 : 2);
-      display.setColor(DisplayDriver::YELLOW);
+      display.setColor(UIColor::primary_txt);
       display.drawTextCentered(display.width() / 2, 72, _node_name);
       display.setTextSize(1);
     } else {
@@ -1724,12 +1865,12 @@ public:
 
       display.setCursor(0, 47);
       display.setTextSize(1);
-      display.setColor(DisplayDriver::YELLOW);
+      display.setColor(UIColor::primary_txt);
       display.print(_node_name);  // V3.05: Node-Name statt Channel-Name
     }
 
     // Hint at the bottom — relative on all displays
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.drawTextCentered(display.width() / 2, display.height() - 13, "long press = OK");
 
     return 500;
@@ -1764,11 +1905,11 @@ public:
     display.setTextSize(1);
 
     // Titelzeile
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
     display.fillRect(0, 0, display.width(), 11);
-    display.setColor(DisplayDriver::DARK);
+    display.setColor(UIColor::window_bkg);
     display.drawTextCentered(display.width() / 2, 1, "SEND SOS");
-    display.setColor(DisplayDriver::LIGHT);
+    display.setColor(UIColor::primary_txt);
 
     // Icon: vertically centred in the space between title and hint line
     // Large display: 48×48, small display: 32×32
@@ -1864,6 +2005,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 #ifdef PIN_BUZZER
   buzzer.begin();
   buzzer.quiet(_node_prefs->buzzer_quiet);
+  buzzer.startup();   // V6: upstream startup tune (respects buzzer_quiet)
 #endif
 
 #ifdef DISP_BACKLIGHT
@@ -1940,6 +2082,86 @@ switch(t){
 #endif
 }
 
+
+// ── V6: MyMesh::Listener ───────────────────────────────────────────────────
+// Since MeshCore v1.18 MyMesh no longer knows the UI. The display decisions that
+// FieldMesh used to make inside MyMesh.cpp (V3/V5) now live here.
+
+void UITask::onMessageRecv(mesh::Packet *pkt, const ContactInfo &from, uint8_t txt_type, uint32_t sender_timestamp, const char* text) {
+  // we only want to show text messages on display, not cli data (incl. TXT_TYPE_CLI_COMMAND)
+  if (!(txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_SIGNED_PLAIN)) return;
+
+  uint8_t path_len = pkt->isRouteFlood() ? pkt->path_len : 0xFF;
+
+  // V5: newMsg() only when app is NOT connected.
+  // When connected, messages are handled on the phone — do not add to display history.
+  // But always update the active node counter so incoming messages are counted while connected.
+  if (!hasConnection()) {
+    bool is_fav = (from.flags & 0x01) != 0;
+    newMsg(path_len, from.name, text, _msgcount, is_fav);
+    notify(UIEventType::contactMessage);
+  } else {
+    // App is connected: update active node counter only (no display history)
+    updateOnlineNode(from.name, rtc_clock.getCurrentTime());
+  }
+}
+
+void UITask::onChannelMessageRecv(mesh::Packet *pkt, ChannelDetails& channel_details, const char* text) {
+  uint8_t path_len = pkt->isRouteFlood() ? pkt->path_len : 0xFF;
+  const char* channel_name = channel_details.name;
+
+  if (!hasConnection()) {
+    notify(UIEventType::channelMessage);
+  }
+
+  // V3: SOS-Erkennung — "!SOS" irgendwo im Text (MeshCore stellt Node-Name voran)
+  if (strstr(text, "!SOS") != NULL) {
+    triggerSOS(channel_name, text);
+    return;  // do not call newMsg() — SOSAlertScreen takes priority
+  }
+
+  // extract sender name for display and online node cache
+  // everything before ": " in the text — e.g. "Juno48 | Region: Hello" -> "Juno48 | Region"
+  char sender_name[33];
+  const char* display_name = MyMesh::extractSenderName(text, sender_name, sizeof(sender_name))
+                             ? sender_name : channel_name;
+  if (!hasConnection()) {
+    newMsg(path_len, display_name, text, _msgcount, the_mesh.isSenderFavorite(text), channel_name);
+  } else {
+    // App is connected: update active node counter only (no display history)
+    updateOnlineNode(display_name, rtc_clock.getCurrentTime());
+  }
+}
+
+void UITask::onQueueSizeChanged(int msgcount) {
+  // replaces the former msgRead() call from MyMesh (CMD_SYNC_NEXT_MESSAGE) —
+  // also called after every queued message, msgRead() only acts on msgcount == 0
+  msgRead(msgcount);
+}
+
+void UITask::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path_len, const uint8_t* path) {
+  if (!hasConnection()) {
+    notify(UIEventType::newContactMessage);
+  }
+  // Advert received: briefly wake display if on Recent or Tracking page
+  // No hasConnection() check — refresh even when phone is connected
+  // (MyMesh has already updated advert_paths[] before calling the listener)
+  if (isOnRecentOrTrackingPage()) {
+    refreshDisplay();
+  }
+}
+
+void UITask::onControlDataRecv(const mesh::Packet* packet) {
+#if UI_DISCOVER_SCREEN
+  if (packet->payload_len >= 14 && (packet->payload[0] & 0xF0) == CTL_TYPE_NODE_DISCOVER_RESP) {
+    ((HomeScreen *) home)->handleDiscoverResponse(packet);
+    // V6: refresh discovery page right away when it is visible
+    if (curr == home && ((HomeScreen *) home)->isOnDiscoveryPage()) {
+      refreshDisplay();
+    }
+  }
+#endif
+}
 
 void UITask::msgRead(int msgcount) {
   _msgcount = msgcount;
@@ -2129,8 +2351,12 @@ void UITask::shutdown(bool restart){
   if (restart) {
     _board->reboot();
   } else {
-    _display->turnOff();
-    radio_driver.powerOff();
+    // V6 (upstream): clear the screen, then power off board incl. radio, display, GPS and components
+    if (_display != NULL) {
+      _display->forceFullRefresh();
+      _display->clear();
+      _display->endFrame();
+    }
     _board->powerOff();
   }
 }
@@ -2180,6 +2406,18 @@ void UITask::loop() {
   }
 #elif defined(PIN_USER_BTN)
   int ev = user_btn.check();
+  #ifdef UI_HAS_NAV_INPUT
+  // upstream: devices with separate navigation input (rotary etc.)
+  if (ev == BUTTON_EVENT_CLICK) {
+    c = checkDisplayOn(KEY_ENTER);
+  } else if (ev == BUTTON_EVENT_LONG_PRESS) {
+    display.turnOff();
+  } else if (ev == BUTTON_EVENT_DOUBLE_CLICK) {
+    c = handleDoubleClick(KEY_SELECT);
+  } else if (ev == BUTTON_EVENT_TRIPLE_CLICK) {
+    c = handleTripleClick(KEY_SELECT);
+  }
+  #else
   if (ev == BUTTON_EVENT_CLICK) {
     c = checkDisplayOn(KEY_NEXT);
   } else if (ev == BUTTON_EVENT_LONG_PRESS) {
@@ -2189,10 +2427,21 @@ void UITask::loop() {
   } else if (ev == BUTTON_EVENT_TRIPLE_CLICK) {
     c = handleTripleClick(KEY_SELECT);
   }
+  #endif
+#endif
+#if defined(UI_HAS_ROTARY_INPUT)
+  RotaryInputEvent rotaryEv = rotary_input.poll();
+  if (c == 0 && _display != NULL && _display->isOn()) {
+    if (rotaryEv == RotaryInputEvent::Next) {
+      c = KEY_NEXT;
+    } else if (rotaryEv == RotaryInputEvent::Prev) {
+      c = KEY_PREV;
+    }
+  }
 #endif
 #if defined(PIN_USER_BTN_ANA)
   if (abs(millis() - _analogue_pin_read_millis) > 10) {
-    ev = analog_btn.check();
+    int ev = analog_btn.check();
     if (ev == BUTTON_EVENT_CLICK) {
       c = checkDisplayOn(KEY_NEXT);
     } else if (ev == BUTTON_EVENT_LONG_PRESS) {
@@ -2262,9 +2511,9 @@ void UITask::loop() {
         _display->setTextSize(1);
         int y = _display->height() / 3;
         int p = _display->height() / 32;
-        _display->setColor(DisplayDriver::DARK);
+        _display->setColor(UIColor::window_bkg);
         _display->fillRect(p, y, _display->width() - p*2, y);
-        _display->setColor(DisplayDriver::LIGHT);  // draw box border
+        _display->setColor(UIColor::primary_txt);  // draw box border
         _display->drawRect(p, y, _display->width() - p*2, y);
         _display->drawTextCentered(_display->width() / 2, y + p*3, _alert);
         _next_refresh = _alert_expiry;   // will need refresh when alert is dismissed
@@ -2274,6 +2523,15 @@ void UITask::loop() {
       _display->endFrame();
     }
 #if AUTO_OFF_MILLIS > 0
+#ifdef KEEP_DISPLAY_ON_USB
+    // Opt-in: refresh the auto-off deadline while externally powered, so the
+    // timer counts from the moment external power is removed. Off by default
+    // because OLED panels burn in quickly; only enable for LCD targets or
+    // where the display is replaceable.
+    if (board.isExternalPowered()) {
+      _auto_off = millis() + AUTO_OFF_MILLIS;
+    }
+#endif
     if (millis() > _auto_off) {
       _display->turnOff();
     }
@@ -2288,22 +2546,20 @@ void UITask::loop() {
   if (millis() > next_batt_chck) {
     uint16_t milliVolts = getBattMilliVolts();
     if (milliVolts > 0 && milliVolts < AUTO_SHUTDOWN_MILLIVOLTS) {
-
-      // show low battery shutdown alert
-      // we should only do this for eink displays, which will persist after power loss
-      #if defined(THINKNODE_M1) || defined(LILYGO_TECHO)
-      if (_display != NULL) {
-        _display->startFrame();
-        _display->setTextSize(2);
-        _display->setColor(DisplayDriver::RED);
-        _display->drawTextCentered(_display->width() / 2, 20, "Low Battery.");
-        _display->drawTextCentered(_display->width() / 2, 40, "Shutting Down!");
-        _display->endFrame();
+      // V6 (upstream): never shut down while externally powered; alert shown on all displays,
+      // non-eink displays keep it visible for 3s before power-off
+      if(!board.isExternalPowered()) {
+        if (_display != NULL) {
+          _display->startFrame();
+          _display->setTextSize(2);
+          _display->setColor(UIColor::warning_txt);
+          _display->drawTextCentered(_display->width() / 2, 20, "Low Battery.");
+          _display->drawTextCentered(_display->width() / 2, 40, "Shutting Down!");
+          _display->endFrame();
+          if (_display->isEink() == false) { delay(3000); }
+        }
+        shutdown();
       }
-      #endif
-
-      shutdown();
-
     }
     next_batt_chck = millis() + 8000;
   }
@@ -2476,7 +2732,7 @@ void UITask::toggleBuzzer() {
   #endif
 }
 
-// V3: trigger SOS alarm — called by MyMesh::onChannelMessageRecv()
+// V3: trigger SOS alarm — called by UITask::onChannelMessageRecv() (V6: listener)
 void UITask::triggerSOS(const char* from, const char* text) {
   ((SOSAlertScreen*)sos_alert)->setAlert(from, text);
 

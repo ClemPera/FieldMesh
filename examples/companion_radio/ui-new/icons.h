@@ -154,3 +154,13 @@ static const uint8_t muted_icon[] = {
 static const uint8_t nodes_icon[] = {
     0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C
 };
+
+// V6 (upstream v1.18): small lightning bolt, 8x8px, shown next to the battery icon while charging
+static const uint8_t charging_icon[] = {
+  0x18, 0x30, 0x60, 0xFC, 0x18, 0x30, 0x60, 0xC0
+};
+
+// V6 (upstream v1.18): small power plug, 8x8px, shown next to the battery icon once fully charged
+static const uint8_t plug_icon[] = {
+  0x24, 0x24, 0x7E, 0x7E, 0x7E, 0x3C, 0x18, 0x18
+};
