@@ -6,6 +6,8 @@
 
 Built on [MeshCore](https://github.com/ripplebiz/MeshCore) ·  Based on MeshCore v1.18.0 ·  Download latest [release](../../releases/latest)
 
+> ⚠️ **Known issue:** On some devices, updating from V5.x to V6.0 reset the node identity (new public key) and settings (name, radio parameters). Contacts and channels were kept. **Before updating, export your private key in the MeshCore app** so you can re-import it if needed. Investigation in progress.
+
 -----
 
 ## Why FieldMesh?
@@ -93,7 +95,7 @@ V6 moves FieldMesh onto MeshCore v1.18.0. All FieldMesh features sit on top of t
 - **Settings stored as JSON** — preferences are migrated automatically from the old format on first boot, including FieldMesh's saved Off-Grid return parameters
 - **Power saving on nRF52** — the CPU sleeps between events, plus all other upstream changes from v1.16 to v1.18
 
-**Updating from V5.x:** your contacts, channels and settings are kept. The old settings file is left in place, so going back to V5.x restores the settings as they were before the update (changes made in V6 are not carried back).
+**Updating from V5.x:** see the known issue at the top of this page — export your private key before updating. Contacts and channels are kept.
 
 ### UI & Usability
 
