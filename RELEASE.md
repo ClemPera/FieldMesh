@@ -38,8 +38,10 @@ FieldMesh now runs on MeshCore v1.18.0 (previously v1.15.0). All FieldMesh featu
 
 ### Updating from V5.x
 
+> ⚠️ **Known issue:** On some devices, updating from V5.x to V6.0 reset the node identity (new public key) and settings (name, radio parameters). Contacts and channels were kept. **Before updating, export your private key in the MeshCore app** so you can re-import it if needed. Investigation in progress.
+
 - Contacts and channels are kept (file format unchanged)
-- Settings are migrated to `/prefs.json`; the old `/new_prefs` file is left in place, so going back to V5.x restores the settings as they were before the update
+- Settings are migrated to `/prefs.json` — but see the known issue above
 - New home screen page: page indicator shows one more dot
 
 ---
